@@ -1,0 +1,53 @@
+# =============================================
+# 恶意文件分析平台 v3.0 — 依赖清单
+# =============================================
+
+# 核心依赖
+pefile>=2023.2.7
+python-magic>=0.4.27
+psutil>=5.9.0
+requests>=2.31.0
+jinja2>=3.1.2
+
+# 可选但强烈推荐的依赖
+frida>=16.0.0
+scapy>=2.5.0
+capstone>=4.0.2
+pycryptodome>=3.19.0
+pywin32>=306; sys_platform == "win32"
+
+# 压缩包处理
+rarfile>=4.0
+py7zr>=0.20.0
+
+# 配置解析
+pyyaml>=6.0.1
+
+# 数据处理
+numpy>=1.24.0
+pandas>=2.0.0
+
+# GUI 增强
+ttkthemes>=3.2.0
+Pillow>=10.0.0
+
+# 网络分析
+pyshark>=0.6
+
+# ETW 内核监控 (pywintrace 提供 etw 模块, 替代已废弃的 etw PyPI 包)
+pywintrace>=0.2.0
+
+# ClamAV 本地扫描 (clamd 客户端; 引擎+病毒库已内置, 无需 clamd 服务)
+clamd>=1.0.2
+
+# URL 动态行为监控 (浏览器沙箱; 使用系统 Chrome 无需下载浏览器内核)
+playwright>=1.45.0
+
+# 其他
+olefile>=0.47
+lief>=0.13.0
+
+# 开发依赖
+pytest>=7.4.0
+black>=23.0.0
+mypy>=1.5.0

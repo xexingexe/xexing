@@ -1,0 +1,127 @@
+{
+  "debug": false,
+  "verbose": false,
+  "threads": 4,
+  "max_file_size": 524288000,
+  "chunk_size": 4194304,
+  "sandbox": {
+    "enabled": true,
+    "timeout": 300,
+    "memory_limit_mb": 512,
+    "process_limit": 20,
+    "cpu_limit_sec": 0,
+    "network_mode": "block",
+    "sandbox_type": "job_object",
+    "fake_desktop": false,
+    "log_all_files": true,
+    "redirect_temp": true,
+    "child_wait_timeout": 300,
+    "analysis_total_timeout": 600,
+    "frida_attach_timeout": 30
+  },
+  "memory": {
+    "enabled": true,
+    "dump_enabled": true,
+    "dump_max_size": 104857600,
+    "dump_dir": "memory_dumps",
+    "analyze_rwx": true,
+    "detect_shellcode": true,
+    "detect_pe_injection": true
+  },
+  "network": {
+    "capture_enabled": true,
+    "capture_timeout": 300,
+    "pcap_enabled": true,
+    "pcap_dir": "pcaps",
+    "analyze_dns": true,
+    "analyze_http": true,
+    "analyze_suspicious": true,
+    "suspicious_ports": [
+      4444,
+      5555,
+      6666,
+      7777,
+      8888,
+      9999,
+      31337,
+      12345,
+      54321,
+      8080,
+      1080,
+      3128
+    ],
+    "suspicious_tlds": [
+      ".tk",
+      ".ml",
+      ".ga",
+      ".cf",
+      ".gq"
+    ]
+  },
+  "api_keys": {
+    "virustotal": "",
+    "threatbook": "",
+    "_360": "",
+    "hybrid_analysis": "",
+    "malware_bazaar": ""
+  },
+  "report": {
+    "output_dir": "reports",
+    "html_enabled": true,
+    "json_enabled": true,
+    "pdf_enabled": true,
+    "template_dir": "templates",
+    "include_raw_data": false
+  },
+  "detection": {
+    "packer_sections": [
+      ".upx",
+      ".vmp",
+      ".vmp0",
+      ".vmp1",
+      ".themida",
+      ".enigma",
+      ".petite",
+      ".aspack",
+      ".aspr",
+      ".sg0",
+      ".svkp"
+    ],
+    "suspicious_section_patterns": [
+      "^\\.[a-z]{1,3}$",
+      "[^\\x20-\\x7e]"
+    ],
+    "anti_debug_apis": [
+      "IsDebuggerPresent",
+      "CheckRemoteDebuggerPresent",
+      "NtQueryInformationProcess",
+      "NtSetInformationThread",
+      "OutputDebugString",
+      "FindWindow",
+      "GetTickCount",
+      "NtQuerySystemInformation",
+      "NtCreateThreadEx"
+    ],
+    "persistence_paths": [
+      "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run",
+      "HKLM\\Software\\Microsoft\\Windows\\CurrentVersion\\Run",
+      "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\RunOnce",
+      "HKLM\\Software\\Microsoft\\Windows\\CurrentVersion\\RunOnce",
+      "HKLM\\SYSTEM\\CurrentControlSet\\Services",
+      "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Shell Folders",
+      "HKCU\\Environment",
+      "HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon"
+    ],
+    "family_signatures": {}
+  },
+  "rules_path": "rules",
+  "temp_dir": "temp",
+  "registry_keys": [
+    "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run",
+    "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\RunOnce",
+    "HKLM\\Software\\Microsoft\\Windows\\CurrentVersion\\Run",
+    "HKLM\\Software\\Microsoft\\Windows\\CurrentVersion\\RunOnce",
+    "HKLM\\SYSTEM\\CurrentControlSet\\Services",
+    "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer"
+  ]
+}
