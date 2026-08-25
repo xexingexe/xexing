@@ -83,6 +83,7 @@ hidden_imports = [
     "analyzer.sandbox", "analyzer.sandbox_monitor", "analyzer.deep_dive",
     "analyzer.rat_config", "analyzer.sigma_rules", "analyzer.yara_scanner",
     "analyzer.yara_downloader", "analyzer.deobfuscator",
+    "analyzer.behavior_tags", "analyzer.suricata_rules",
     "analyzer.disk_forensics", "analyzer.memory_forensics",
     "analyzer.mem_api", "analyzer.sub_files", "analyzer.etw_monitor", "analyzer.tls_fingerprint",
     "analyzer.fake_user_env", "analyzer.signature_engine",

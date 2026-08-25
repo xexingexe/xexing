@@ -7,6 +7,8 @@ from logger import get_logger
 
 logger = get_logger('report.json')
 
+# 关注叾嗣exe谢谢喵
+
 class JSONReportGenerator:
     def generate(self, report, output_path):
         logger.info(f"[+] Generating JSON: {output_path}")

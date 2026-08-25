@@ -501,6 +501,8 @@ class AnalysisGUI:
                  foreground='#4f46e5', background='#f0f2f5').pack(side='left')
         ttk.Label(title_left, text=f"v{APP_VERSION}", font=('Segoe UI', 10, 'bold'), 
                  foreground='#818cf8', background='#f0f2f5').pack(side='left', padx=(8, 0))
+        ttk.Label(title_left, text=f"github: {APP_AUTHOR} · bilibili: {APP_BILIBILI}", 
+                 font=('Segoe UI', 9), foreground='#94a3b8', background='#f0f2f5').pack(side='left', padx=(12, 0))
         
         # 环境安全状态
         self.env_status_var = tk.StringVar(value="环境检测中...")
@@ -1376,8 +1378,6 @@ class AnalysisGUI:
         about_lines = [
             f"应用: {APP_NAME} v{APP_VERSION}",
             f"程序名称: {APP_NAME_CN}",
-            f"程序作者: {APP_AUTHOR}",
-f"Bilibili: {APP_BILIBILI}",
             f"Python 版本: {py_ver}",
             f"YARA 规则数: {yara_count}",
             f"配置文件: {cfg_path}",

@@ -198,7 +198,12 @@ class SummaryReportGenerator:
             ]
         overlay = getattr(report, '_overlay_payloads', None)
         if overlay:
-            result['Overlay载荷'] = f'{len(overlay)} 个潜在载荷'
+            _ov_ioc = sum(
+                sum(len(v) for v in (o.get('iocs') or {}).values())
+                for o in overlay if isinstance(o, dict))
+            _ov_dec = sum(1 for o in overlay if isinstance(o, dict) and o.get('decryption_attempts'))
+            result['Overlay载荷'] = (f'{len(overlay)} 个载荷' + (f', 提取 IOC {_ov_ioc} 条' if _ov_ioc else '')
+                                     + (f', {_ov_dec} 个已解密' if _ov_dec else ''))
 
         pe = report.pe_info
         if pe:
@@ -223,6 +228,26 @@ class SummaryReportGenerator:
                 {'规则': getattr(s, 'title', ''), '等级': getattr(s, 'level', ''),
                  '描述': str(getattr(s, 'description', ''))[:120]}
                 for s in sigma[:10]
+            ]
+        suricata = getattr(report, '_suricata_matches', None) or []
+        if suricata:
+            result['Suricata网络签名'] = [
+                {'SID': getattr(s, 'sid', ''), '签名': getattr(s, 'msg', ''),
+                 '级别': getattr(s, 'severity', '')}
+                for s in suricata[:10]
+            ]
+        c2 = getattr(report, '_c2_candidates', None) or []
+        if c2:
+            _c2_hits = [c for c in c2 if c.get('is_c2')]
+            result['C2通信评分'] = {
+                '可疑连接数': len(c2),
+                'C2判定数': len(_c2_hits),
+                '高危端点': [f"{c.get('remote')}:{c.get('port')}" for c in _c2_hits[:5]],
+            }
+        btags = getattr(report, '_behavior_tags', None) or []
+        if btags:
+            result['行为标签'] = [
+                f"{t.get('tag')} ({t.get('mitre')})" for t in btags[:20]
             ]
         fam = report.malware_family
         if fam:

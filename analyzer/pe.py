@@ -12,6 +12,8 @@ from analyzer.models import PEInfo, SectionInfo, ImportInfo, ExportInfo, Resourc
 
 logger = get_logger('analyzer.pe')
 
+# 关注叾嗣exe谢谢喵
+
 # 尝试导入 pefile
 PEFILE_AVAILABLE = False
 try:
@@ -33,37 +35,78 @@ class PEAnalyzer:
     """PE 文件分析器"""
 
     @staticmethod
-    def _extract_signer(filepath: str) -> str:
-        try:
-            import subprocess, base64
-            encoded = base64.b64encode(filepath.encode('utf-16-le')).decode('ascii')
-            result = subprocess.run(
-                ['powershell', '-NoProfile', '-Command',
-                 f"$p=[Text.Encoding]::Unicode.GetString([Convert]::FromBase64String('{encoded}'));"
-                 f"$s=Get-AuthenticodeSignature $p;"
-                 f"\"STATUS=$($s.Status)\";"
-                 f"$s.SignerCertificate | ForEach-Object {{ \"SUBJECT=$($_.Subject)\" }}"],
-                capture_output=True, text=True, timeout=10, errors='ignore'
-            )
-            if result.returncode == 0 and result.stdout.strip():
-                lines = result.stdout.strip().splitlines()
-                status = ''
-                subject = ''
-                for l in lines:
-                    l = l.strip()
-                    if l.startswith('STATUS='):
-                        status = l[len('STATUS='):].strip()
-                    elif l.startswith('SUBJECT='):
-                        subject = l[len('SUBJECT='):].strip()
-                # 返回 状态|签名者 — 状态是 patch 免杀关键指标:
-                # HashMismatch=文件被篡改(白程序被patch) / UnknownError=签名损坏
-                if status:
-                    cn = re.search(r'CN=([^,\s]+)', subject)
-                    signer = cn.group(1) if cn else subject[:80]
-                    return f'{status}|{signer}' if signer else f'{status}'
-        except Exception:
-            pass
+    def _extract_signer(filepath: str):
+        """提取数字签名（兼容旧接口，返回 'STATUS|SIGNER' 字符串）"""
+        full = PEAnalyzer._extract_signature_chain(filepath)
+        if not full:
+            return 'present'
+        status = full.get('status', '')
+        signer = full.get('signer', '')
+        if status and signer:
+            return f'{status}|{signer}'
+        if status:
+            return status
         return 'present'
+
+    @staticmethod
+    def _extract_signature_chain(filepath: str) -> dict:
+        """数字签名链解析 — 状态/签名者/颁发CA/序列号/有效期/吊销状态
+
+        返回 dict（解析失败返回空 dict）:
+          status      有效状态 (Valid/NotSigned/HashMismatch/UnknownError/...)
+          signer      签名者 CN
+          issuer      颁发者 CA
+          serial      证书序列号
+          not_before  生效时间
+          not_after   过期时间
+          chain_valid 证书链是否可信
+          chain_status 证书链状态描述
+        """
+        try:
+            import subprocess, base64, json
+            encoded = base64.b64encode(filepath.encode('utf-16-le')).decode('ascii')
+            ps = (
+                f"$p=[Text.Encoding]::Unicode.GetString([Convert]::FromBase64String('{encoded}'));"
+                f"$s=Get-AuthenticodeSignature $p;"
+                f"$o=[PSCustomObject]@{{Status=$s.Status.ToString();Subject='';Issuer='';"
+                f"Serial='';NotBefore='';NotAfter='';ChainValid=$false;ChainStatus=''}};"
+                f"$c=$s.SignerCertificate;"
+                f"if($c){{$o.Subject=$c.Subject;$o.Issuer=$c.Issuer;$o.Serial=$c.SerialNumber;"
+                f"try{{$o.NotBefore=$c.NotBefore.ToString('yyyy-MM-dd HH:mm:ss')}}catch{{}};"
+                f"try{{$o.NotAfter=$c.NotAfter.ToString('yyyy-MM-dd HH:mm:ss')}}catch{{}};"
+                f"$chain=New-Object System.Security.Cryptography.X509Certificates.X509Chain;"
+                f"$chain.ChainPolicy.RevocationMode="
+                f"[System.Security.Cryptography.X509Certificates.X509RevocationMode]::NoCheck;"
+                f"$o.ChainValid=$chain.Build($c);"
+                f"$o.ChainStatus=(($chain.ChainStatus|ForEach-Object{{$_.Status.ToString()}})-join'; ');"
+                f"}};"
+                f"$o|ConvertTo-Json -Compress"
+            )
+            result = subprocess.run(
+                ['powershell', '-NoProfile', '-Command', ps],
+                capture_output=True, text=True, timeout=20, errors='ignore'
+            )
+            if result.returncode != 0 or not result.stdout.strip():
+                return {}
+            data = json.loads(result.stdout.strip())
+            out = {
+                'status': str(data.get('Status', '')),
+                'signer': '',
+                'issuer': str(data.get('Issuer', '')),
+                'serial': str(data.get('Serial', '')),
+                'not_before': str(data.get('NotBefore', '')),
+                'not_after': str(data.get('NotAfter', '')),
+                'chain_valid': bool(data.get('ChainValid', False)),
+                'chain_status': str(data.get('ChainStatus', '')),
+            }
+            subject = str(data.get('Subject', ''))
+            if subject:
+                import re
+                cn = re.search(r'CN=([^,\s]+)', subject)
+                out['signer'] = cn.group(1) if cn else subject[:80]
+            return out
+        except Exception:
+            return {}
 
     SUSPICIOUS_APIS = [
         'CreateRemoteThread', 'VirtualAllocEx', 'WriteProcessMemory',
@@ -266,28 +309,28 @@ class PEAnalyzer:
             if pe.DIRECTORY_ENTRY_TLS.struct.AddressOfCallBacks:
                 tls_callbacks.append(hex(pe.DIRECTORY_ENTRY_TLS.struct.AddressOfCallBacks))
         
-        # 数字签名 — 提取签名者信息 + 签名有效性 (patch 免杀关键指标)
+        # 数字签名 — 提取签名者信息 + 签名有效性 + 签名链 (CA/有效期/吊销)
         # ⚠ 用 PowerShell Get-AuthenticodeSignature 判定 (比 pefile 安全目录可靠:
         #   部分系统文件 pefile 解析不到安全目录, PS 查证书存储总能有状态)
         signature = {'has_signature': False, 'signer': '', 'valid': False}
         try:
-            sig_str = self._extract_signer(self.file_path)
-            # 新格式 "STATUS|SIGNER" — 状态解析:
-            #   Valid=签名有效(官方文件) / HashMismatch=文件被修改(白程序被patch!)
-            #   NotSigned=无签名 / UnknownError=证书损坏 / NotTrusted=链不受信任
-            if sig_str and sig_str != 'present':
-                if '|' in sig_str:
-                    sig_status, sig_signer = sig_str.split('|', 1)
+            chain = self._extract_signature_chain(self.file_path)
+            if chain and chain.get('status'):
+                sig_status = chain['status']
+                signature['status'] = sig_status
+                if sig_status != 'NotSigned':
                     signature['has_signature'] = True
                     signature['valid'] = (sig_status == 'Valid')
-                    signature['signer'] = sig_signer
-                    signature['status'] = sig_status
-                elif sig_str == 'NotSigned':
+                    signature['signer'] = chain.get('signer', '')
+                    signature['issuer'] = chain.get('issuer', '')
+                    signature['serial'] = chain.get('serial', '')
+                    signature['not_before'] = chain.get('not_before', '')
+                    signature['not_after'] = chain.get('not_after', '')
+                    signature['chain_valid'] = chain.get('chain_valid', False)
+                    signature['chain_status'] = chain.get('chain_status', '')
+                else:
                     signature['has_signature'] = False
                     signature['status'] = 'NotSigned'
-                else:
-                    signature['signer'] = sig_str
-                    signature['status'] = 'Unknown'
         except Exception:
             pass
         if hasattr(pe, 'DIRECTORY_ENTRY_SECURITY') and pe.DIRECTORY_ENTRY_SECURITY and not signature.get('has_signature'):

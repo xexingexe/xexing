@@ -389,6 +389,14 @@ class MemoryAnalyzer:
         if hollow:
             hollowing_indicators.extend(hollow)
 
+        # 进程镂空已发生但常规扫描未见 shellcode → 对镂空映像做定向静态扫描
+        # （云沙箱同款做法：镂空前后主模块映像 = 注入载荷，必做静态字节扫描）
+        if hollowing_indicators and not shellcode_found:
+            hollow_sc = self._scan_hollowed_image_shellcode(pid)
+            if hollow_sc:
+                shellcode_found = True
+                shellcode_details.extend(hollow_sc)
+
         # ===== 构建摘要 =====
         summary_parts = []
         if rwx:
@@ -732,6 +740,88 @@ class MemoryAnalyzer:
                 except Exception:
                     pass
 
+        return results
+
+    # ===== 镂空映像定向静态扫描 =====
+
+    def _scan_hollowed_image_shellcode(self, pid: int) -> List[Dict]:
+        """进程镂空后的定向静态扫描 — 读取主模块内存映像，检测注入载荷代码
+
+        镂空已确认（入口点/时间戳不匹配）时，主模块内存映像就是注入的载荷，
+        对完整映像跑 Shellcode / PE 注入签名，避免常规区域扫描漏报。
+        """
+        results = []
+        if not PYWIN32_AVAILABLE:
+            return results
+        try:
+            import psutil
+            proc = psutil.Process(pid)
+            exe_path = proc.exe()
+        except Exception:
+            return results
+        if not exe_path or not os.path.exists(exe_path):
+            return results
+
+        h = None
+        try:
+            import ctypes
+            from ctypes import wintypes
+            h = win32api.OpenProcess(
+                win32con.PROCESS_VM_READ | win32con.PROCESS_QUERY_INFORMATION,
+                False, pid
+            )
+            psapi = ctypes.windll.psapi
+            hProcess = wintypes.HANDLE(h)
+            hModules = (wintypes.HMODULE * 1024)()
+            cbNeeded = wintypes.DWORD()
+            if not psapi.EnumProcessModules(hProcess, hModules, ctypes.sizeof(hModules), ctypes.byref(cbNeeded)):
+                return results
+            base = hModules[0]
+
+            head = win32process.ReadProcessMemory(h, base, 0x1000)
+            if head[:2] != b'MZ':
+                return results
+            size_of_image = 0
+            try:
+                pe_off = struct.unpack('<I', head[0x3C:0x40])[0]
+                if len(head) >= pe_off + 0x40:
+                    # OptionalHeader.SizeOfImage 位于 PE+0x38
+                    size_of_image = struct.unpack('<I', head[pe_off + 4 + 0x38:pe_off + 4 + 0x3C])[0]
+            except Exception:
+                pass
+            if not size_of_image or size_of_image > 64 * 1024 * 1024:
+                size_of_image = 0x1000
+            image = win32process.ReadProcessMemory(h, base, min(size_of_image, 16 * 1024 * 1024))
+            if not image:
+                return results
+
+            # Shellcode 签名扫描（排除纯“MZ+PE stub”这类每个PE都有的通用头）
+            sc = self._detect_shellcode(image)
+            _trivial = {'MZ+PE stub in memory (hollowing)'}
+            for s in sc[:8]:
+                if s.get('pattern') in _trivial:
+                    continue
+                s['hollowed_image'] = True
+                s['description'] = f'镂空映像内 {s.get("pattern", "")}'
+                results.append(s)
+
+            # PE 注入签名（完整PE映像 = 镂空载荷）
+            pe = self._detect_pe_in_memory(image)
+            for p in pe[:3]:
+                results.append({
+                    'offset': p.get('offset', ''),
+                    'pattern': f'镂空映像内含 {p.get("type", "PE")} (节区 {p.get("sections", 0)})',
+                    'hex': '',
+                    'hollowed_image': True,
+                })
+        except Exception as e:
+            logger.debug(f'镂空映像扫描失败 PID={pid}: {e}')
+        finally:
+            if h is not None:
+                try:
+                    win32api.CloseHandle(h)
+                except Exception:
+                    pass
         return results
 
     # ===== 注入技术检测 =====

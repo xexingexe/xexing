@@ -15,6 +15,8 @@ from logger import get_logger
 
 logger = get_logger('analyzer.deobfuscator')
 
+# 关注叾嗣exe谢谢喵
+
 BASE64_RE = re.compile(rb'[A-Za-z0-9+/=]{40,}')
 BASE64_URL_RE = re.compile(rb'[A-Za-z0-9\-_=]{40,}')
 HEX_RE = re.compile(rb'(?:\\x[0-9a-fA-F]{2}){8,}|(?:0x[0-9a-fA-F]{2}[,\s]*){8,}')
@@ -352,6 +354,162 @@ class Deobfuscator:
 
 def zlib_magic_check(data: bytes) -> bool:
     return data[:2] in (b'\x78\x9c', b'\x78\x01', b'\x78\xda', b'\x78\x5e')
+
+
+def _extract_overlay_region(filepath: str):
+    """定位 PE Overlay 数据区，返回 (overlay_start, overlay_size) 或 None"""
+    try:
+        size = os.path.getsize(filepath)
+        if size < 64:
+            return None
+        with open(filepath, 'rb') as f:
+            header = f.read(64)
+        if header[:2] != b'MZ':
+            return None
+        pe_off = struct.unpack('<I', header[0x3C:0x40])[0]
+        with open(filepath, 'rb') as f:
+            f.seek(pe_off + 20)
+            size_opt_hdr = struct.unpack('<H', f.read(2))[0]
+            f.seek(pe_off + 6)
+            num_sections = struct.unpack('<H', f.read(2))[0]
+            sec_base = pe_off + 24 + size_opt_hdr
+            last_raw = 0
+            last_raw_size = 0
+            for _ in range(num_sections):
+                f.seek(sec_base + _ * 40 + 16)
+                raw_size = struct.unpack('<I', f.read(4))[0]
+                raw_off = struct.unpack('<I', f.read(4))[0]
+                if raw_off > last_raw:
+                    last_raw = raw_off
+                    last_raw_size = raw_size
+        overlay_start = last_raw + last_raw_size
+        overlay_size = size - overlay_start
+        if overlay_size <= 0:
+            return None
+        return overlay_start, overlay_size
+    except Exception:
+        return None
+
+
+def _extract_iocs_from_blob(blob: bytes) -> Dict:
+    """从字节块提取 IOC：URL / IP / 域名 / 文件路径 / 可读配置串"""
+    iocs = {'urls': [], 'ips': [], 'domains': [], 'paths': [], 'config_strings': []}
+    if not blob:
+        return iocs
+    try:
+        text = blob.decode('utf-8', errors='ignore')
+    except Exception:
+        text = blob.decode('latin-1', errors='ignore')
+
+    for m in re.finditer(r'https?://[^\x00\x20\x27"]{5,200}', text):
+        u = m.group().rstrip('.,;)')
+        if u not in iocs['urls']:
+            iocs['urls'].append(u)
+    for m in re.finditer(
+            r'(?<![\d.])(?:25[0-5]|2[0-4]\d|1?\d?\d)\.'
+            r'(?:25[0-5]|2[0-4]\d|1?\d?\d)\.'
+            r'(?:25[0-5]|2[0-4]\d|1?\d?\d)\.'
+            r'(?:25[0-5]|2[0-4]\d|1?\d?\d)(?::\d{1,5})?(?![\d.])', text):
+        ip = m.group()
+        if ip not in iocs['ips']:
+            iocs['ips'].append(ip)
+    for m in re.finditer(r'[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.[a-zA-Z]{2,}', text):
+        d = m.group().lower()
+        if d not in iocs['domains'] and '.' in d and len(d) < 80:
+            iocs['domains'].append(d)
+    for m in re.finditer(r'[A-Za-z]:\\[^\x00\x0a\x0d]{3,150}', text):
+        p = m.group()
+        if p not in iocs['paths']:
+            iocs['paths'].append(p)
+    for line in text.splitlines():
+        line = line.strip()
+        if 8 < len(line) < 200 and ('=' in line or ':' in line):
+            if any(k in line.lower() for k in ('host', 'port', 'key', 'url', 'server',
+                                                'pass', 'user', 'ip', 'domain', 'config', 'id')):
+                if line not in iocs['config_strings']:
+                    iocs['config_strings'].append(line)
+    for k in iocs:
+        iocs[k] = iocs[k][:20]
+    return iocs
+
+
+def extract_overlay_payload(filepath: str, cap: int = 8 * 1024 * 1024) -> List[Dict]:
+    """Overlay 载荷自动提取 — 定位附加数据 + 解密尝试 + IOC 提取
+
+    与 detect_payload_overlay 的区别：不仅"识别有没有 Overlay"，
+    还真正把 Overlay 读出来、尝试 XOR/Base64 解密、提取配置/URL/IP。
+    """
+    results = []
+    region = _extract_overlay_region(filepath)
+    if not region:
+        return results
+    overlay_start, overlay_size = region
+    try:
+        with open(filepath, 'rb') as f:
+            f.seek(overlay_start)
+            raw = f.read(min(overlay_size, cap))
+    except Exception:
+        return results
+    if not raw:
+        return results
+
+    r = {
+        'type': 'PE Overlay',
+        'offset': overlay_start,
+        'size': overlay_size,
+        'severity': 'low',
+        'payload': '未知覆盖数据',
+        'iocs': {'urls': [], 'ips': [], 'domains': [], 'paths': [], 'config_strings': []},
+        'decryption_attempts': [],
+        'embedded_files': [],
+    }
+
+    if raw[:2] == b'MZ':
+        r['payload'] = '嵌套 PE 文件'
+        r['severity'] = 'high'
+        r['embedded_files'].append('PE')
+    elif raw[:4] == b'PK\x03\x04':
+        r['payload'] = '嵌套 ZIP 存档'
+        r['severity'] = 'medium'
+        r['embedded_files'].append('ZIP')
+    elif zlib_magic_check(raw):
+        r['payload'] = 'zlib 压缩数据'
+        r['severity'] = 'medium'
+        r['embedded_files'].append('zlib')
+
+    r['iocs'] = _extract_iocs_from_blob(raw)
+
+    # XOR 单字节解密尝试（Overlay 常为 XOR 混淆的配置/URL）
+    try:
+        from collections import Counter
+        freq = Counter(raw)
+        top_byte, top_count = freq.most_common(1)[0] if freq else (0, 0)
+        if top_count / max(len(raw), 1) > 0.12 and top_byte not in (0x00, 0x20):
+            decoded = bytes(b ^ top_byte for b in raw[:cap])
+            printable = sum(1 for c in decoded if 0x20 <= c <= 0x7e or c in (0x0a, 0x0d, 0x09))
+            if printable / max(len(decoded), 1) > 0.5:
+                r['decryption_attempts'].append({
+                    'method': f'单字节XOR (key=0x{top_byte:02X})',
+                    'confidence': round(min(0.95, printable / max(len(decoded), 1)), 2),
+                })
+                dec_iocs = _extract_iocs_from_blob(decoded)
+                for k in r['iocs']:
+                    for v in dec_iocs[k]:
+                        if v not in r['iocs'][k]:
+                            r['iocs'][k].append(v)
+                r['iocs']['config_strings'] = r['iocs']['config_strings'][:20]
+                if any(r['iocs'][k] for k in ('urls', 'ips', 'config_strings')):
+                    r['severity'] = 'high'
+                    r['payload'] = f'XOR 混淆配置数据 (key=0x{top_byte:02X}, 已解密)'
+    except Exception:
+        pass
+
+    if r['severity'] == 'low' and any(r['iocs'][k] for k in ('urls', 'ips', 'config_strings', 'domains')):
+        r['payload'] = '附加数据（含可读配置/IOC）'
+        r['severity'] = 'medium'
+
+    results.append(r)
+    return results
 
 
 def _is_printable_enhanced(s: str) -> bool:

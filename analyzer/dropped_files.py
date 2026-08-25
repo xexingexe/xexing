@@ -5,6 +5,7 @@
 """
 import os
 import hashlib
+import struct
 from typing import List
 
 from logger import get_logger
@@ -12,6 +13,83 @@ from utils.helpers import calc_entropy, detect_file_type_file
 from analyzer.models import DroppedFilesAnalysis, DroppedFile
 
 logger = get_logger('analyzer.dropped_files')
+
+
+def detect_magic_kind(data: bytes):
+    """魔数检测 — 按文件头内容识别真实类型（不依赖扩展名）
+
+    返回 (kind, label)：kind 为 VT 风格分类，label 为人读类型描述。
+    重点补漏：DOS_COM（MZ 无 PE 头）、PE_DLL（PE 且 DLL 标志位）、
+    脚本/文本/压缩包等无扩展名或伪装扩展名的释放文件。
+    """
+    if not data:
+        return ('unknown', 'Unknown')
+    if len(data) < 2:
+        return ('unknown', 'Unknown')
+
+    if data[:2] == b'MZ':
+        # 有 PE 签名 → 真 PE（区分 EXE/DLL）
+        try:
+            if len(data) >= 0x40:
+                pe_off = struct.unpack('<I', data[0x3C:0x40])[0]
+                if data[pe_off:pe_off + 4] == b'PE\x00\x00' and len(data) >= pe_off + 6:
+                    machine = struct.unpack('<H', data[pe_off + 4:pe_off + 6])[0]
+                    arch = {0x14C: 'x86', 0x8664: 'x64', 0xAA64: 'ARM64', 0x1C0: 'ARM'}.get(machine, f'0x{machine:04X}')
+                    # 读 COFF Characteristics (DLL 标志 0x2000)
+                    chars = struct.unpack('<H', data[pe_off + 4 + 18:pe_off + 4 + 20])[0] \
+                        if len(data) >= pe_off + 4 + 20 else 0
+                    if chars & 0x2000:
+                        return ('PE_DLL', f'PE32 DLL ({arch})')
+                    # .sys 驱动 = PE 且 Subsystem 为 Native(1)
+                    try:
+                        opt_off = pe_off + 4 + 20
+                        size_opt = struct.unpack('<H', data[opt_off:opt_off + 2])[0]
+                        sub_off = opt_off + 68
+                        if len(data) >= sub_off + 2:
+                            subsystem = struct.unpack('<H', data[sub_off:sub_off + 2])[0]
+                            if subsystem == 1:
+                                return ('PE_DRIVER', f'PE 驱动 ({arch})')
+                    except Exception:
+                        pass
+                    return ('PE_EXE', f'PE32 可执行文件 ({arch})')
+        except Exception:
+            pass
+        # MZ 无有效 PE 头 → DOS 可执行文件 (DOS_COM/DOS MZ)
+        return ('DOS_COM', 'DOS MZ 可执行文件（无 PE 头）')
+
+    if data[:4] == b'\x7fELF':
+        return ('ELF', 'ELF 可执行文件')
+    if data[:4] == b'PK\x03\x04' or data[:4] == b'PK\x05\x06':
+        return ('ZIP', 'ZIP 压缩包')
+    if data[:4] == b'\x89PNG':
+        return ('PNG', 'PNG 图片')
+    if data[:2] == b'\xff\xd8':
+        return ('JPEG', 'JPEG 图片')
+    if data[:4] == b'%PDF':
+        return ('PDF', 'PDF 文档')
+    if data[:4] == b'7z\xbc\xaf':
+        return ('7Z', '7-Zip 压缩包')
+    if data[:3] == b'Rar':
+        return ('RAR', 'RAR 压缩包')
+    if data[:4] == b'\xd0\xcf\x11\xe0':
+        return ('OLE', 'OLE 复合文档 (Office)')
+    if data[:8] == b'\x00\x00\x00\x00\x00\x00\x00\x00':
+        return ('EMPTY', '空文件/零填充')
+
+    # 文本/脚本类（以可打印 ASCII 为主）
+    head = data[:512]
+    printable = sum(1 for b in head if 0x20 <= b <= 0x7E or b in (0x0A, 0x0D, 0x09))
+    if len(head) and printable / len(head) > 0.85:
+        text = head.decode('utf-8', errors='ignore')
+        tl = text.lower()
+        if tl.startswith('#!') or 'powershell' in tl or 'wscript' in tl or 'cscript' in tl:
+            return ('SCRIPT', '脚本文件')
+        if '<html' in tl or '<?xml' in tl or '<script' in tl:
+            return ('HTML', 'HTML/XML 文档')
+        return ('TEXT', '文本文件')
+
+    return ('unknown', 'Unknown')
+
 
 
 class DroppedFileTracker:
@@ -107,9 +185,16 @@ class DroppedFileTracker:
         result.dropped_files = dropped
         result.total_dropped = len(dropped)
         result.executable_dropped = sum(1 for d in dropped if d.is_executable)
-        result.dll_dropped = sum(1 for d in dropped if d.path.lower().endswith('.dll'))
-        result.script_dropped = sum(1 for d in dropped if any(d.path.lower().endswith(e) for e in self.SCRIPT_EXTS))
-        result.documents_dropped = sum(1 for d in dropped if any(d.path.lower().endswith(e) for e in self.DOC_EXTS))
+        result.dll_dropped = sum(1 for d in dropped
+                                 if d.path.lower().endswith('.dll')
+                                 or d.file_type.startswith('PE32 DLL')
+                                 or getattr(d, 'file_kind', '') == 'PE_DLL')
+        result.script_dropped = sum(1 for d in dropped
+                                    if any(d.path.lower().endswith(e) for e in self.SCRIPT_EXTS)
+                                    or getattr(d, 'file_kind', '') == 'SCRIPT')
+        result.documents_dropped = sum(1 for d in dropped
+                                       if any(d.path.lower().endswith(e) for e in self.DOC_EXTS)
+                                       or getattr(d, 'file_kind', '') in ('PDF', 'OLE', 'TEXT'))
 
         for d in dropped:
             if d.is_executable or d.entropy > 7.0 or any(p in d.path.lower() for p in self.SUSPICIOUS_PATHS):
@@ -217,6 +302,7 @@ class DroppedFileTracker:
         sha256 = ''
         entropy = 0.0
         ftype = 'Unknown'
+        magic_kind = ''
 
         try:
             if size > 0 and size < 100 * 1024 * 1024:
@@ -227,11 +313,17 @@ class DroppedFileTracker:
                 if size < 10 * 1024 * 1024:
                     entropy = calc_entropy(data)
                 ftype, _ = detect_file_type_file(path)
+                # 魔数检测 — 覆盖扩展名伪装/无扩展名/系统 file 识别失败的情况
+                magic_kind, magic_label = detect_magic_kind(data)
+                # 魔数结果优先于扩展名推断（file 库对 DOS/伪装文件常识别为 generic）
+                if magic_kind not in ('unknown',):
+                    ftype = magic_label
         except:
             pass
 
         ext = os.path.splitext(path)[1].lower()
-        is_exec = ext in self.EXECUTABLE_EXTS
+        is_exec = (ext in self.EXECUTABLE_EXTS
+                   or magic_kind in ('PE_EXE', 'PE_DLL', 'PE_DRIVER', 'DOS_COM', 'ELF', 'SCRIPT'))
 
         # 轻量级内容特征提取
         analysis_note = ''
@@ -258,4 +350,5 @@ class DroppedFileTracker:
             is_executable=is_exec,
             abs_path=path,
             analysis_note=analysis_note,
+            file_kind=magic_kind,
         )

@@ -17,6 +17,8 @@ from config import CONFIG
 
 logger = get_logger('batch')
 
+# 关注叾嗣exe谢谢喵
+
 # 批量扫描时排除的噪音/中间文件
 _SKIP_EXTENSIONS = {
     '.tmp', '.part', '.crdownload', '.log', '.html', '.json', '.xml',

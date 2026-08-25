@@ -473,12 +473,19 @@ class MalwareAnalysisPlatform:
                     logger.debug(f"反混淆检测失败: {ex}")
 
                 try:
-                    overlay_results = Deobfuscator.detect_payload_overlay(file_path)
+                    # 增强版 Overlay 提取：不仅识别，还做 XOR/Base64 解密 + IOC 提取
+                    try:
+                        overlay_results = Deobfuscator.extract_overlay_payload(file_path)
+                    except Exception:
+                        overlay_results = Deobfuscator.detect_payload_overlay(file_path)
                     if overlay_results:
                         if not hasattr(report, '_deobfuscation'):
                             report._deobfuscation = []
                         report._overlay_payloads = overlay_results
-                        logger.info(f"[+] Overlay分析: {len(overlay_results)} 个潜在载荷")
+                        _ov_iocs = sum(
+                            sum(len(v) for v in (o.get('iocs') or {}).values())
+                            for o in overlay_results)
+                        logger.info(f"[+] Overlay分析: {len(overlay_results)} 个载荷, 提取 IOC {_ov_iocs} 条")
                 except Exception as ex:
                     logger.debug(f"Overlay检测失败: {ex}")
 
@@ -891,6 +898,33 @@ class MalwareAnalysisPlatform:
                         if ua_result and (ua_result.get('diverse') or ua_result.get('malicious_hits') or ua_result.get('suspicious_anomalies')):
                             report._ua_analysis = ua_result
                             logger.info(f"[+] UA分析: {ua_result.get('unique_count',0)}种UA/{ua_result.get('ua_count',0)}次请求, 异常={len(ua_result.get('suspicious_anomalies',[]))}项")
+
+                    # C2 通信深度分析 — 可疑连接评分（非标准端口 + 非白名单公网 IP = 高危）
+                    if report.network:
+                        try:
+                            c2_candidates = NetworkAnalyzer.analyze_c2_candidates(report.network)
+                            if c2_candidates:
+                                report._c2_candidates = c2_candidates
+                                _c2_high = [c for c in c2_candidates if c.get('is_c2')]
+                                logger.warning(f"[!] C2候选: {len(c2_candidates)} 条可疑连接, "
+                                               f"其中 {len(_c2_high)} 条判定为 C2")
+                                for c in c2_candidates[:5]:
+                                    logger.info(f"    [{c.get('level')}] {c.get('remote')}:{c.get('port')} "
+                                                f"score={c.get('score')} {'; '.join(c.get('reasons', []))}")
+                        except Exception as e_c2:
+                            logger.debug(f"C2 评分失败: {e_c2}")
+
+                    # IDS 规则集成 — Suricata 网络签名匹配
+                    if report.network:
+                        try:
+                            from analyzer.suricata_rules import SuricataEngine
+                            suricata_engine = SuricataEngine()
+                            report._suricata_matches = suricata_engine.run_all(report)
+                            if report._suricata_matches:
+                                logger.warning(f"[Suricata] 网络签名命中 {len(report._suricata_matches)} 条")
+                        except Exception as e_sur:
+                            logger.debug(f"Suricata 引擎失败: {e_sur}")
+                            report._suricata_matches = []
 
                     # Dropped files — 含系统目录中的释放文件
                     files_created = getattr(report.dynamic, 'files_created', [])
@@ -1314,6 +1348,17 @@ class MalwareAnalysisPlatform:
                                 report.advanced_behavior = second_pass
                         except Exception as e_ab2:
                             logger.debug(f"Second-pass advanced behavior failed: {e_ab2}")
+
+                    # 行为标签标准化 — 将分散证据统一提取为 VT 风格原子化标签
+                    try:
+                        from analyzer.behavior_tags import BehaviorTagEngine
+                        tag_engine = BehaviorTagEngine()
+                        report._behavior_tags = tag_engine.run_all(report)
+                        if report._behavior_tags:
+                            logger.info(f"[BehaviorTags] 提取 {len(report._behavior_tags)} 个标准化标签")
+                    except Exception as e_bt:
+                        logger.debug(f"行为标签引擎失败: {e_bt}")
+                        report._behavior_tags = []
 
                     # 第二轮破坏检测：用动态沙箱数据补充（杀软终止/危险驱动/BYOVD）
                     if report.destruction is not None and report.dynamic:

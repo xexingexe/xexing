@@ -9,7 +9,7 @@ from typing import Optional
 
 from logger import get_logger
 from analyzer.models import AnalysisReport
-from version import APP_VERSION
+from version import APP_VERSION, APP_AUTHOR, APP_BILIBILI
 
 logger = get_logger('report.pdf')
 
@@ -89,7 +89,7 @@ class _PDFReport(_FPDF):
     def header(self):
         self._font(8)
         self.set_text_color(128, 128, 128)
-        self.cell(0, 6, self._safe_text(f'沙箱分析器 v{APP_VERSION}  |  {datetime.now().strftime("%Y-%m-%d %H:%M")}'), align='R')
+        self.cell(0, 6, self._safe_text(f'沙箱分析器 v{APP_VERSION}  |  {datetime.now().strftime("%Y-%m-%d %H:%M")}  |  github: {APP_AUTHOR} · bilibili: {APP_BILIBILI}'), align='R')
         self.ln(3)
         self.set_draw_color(200, 50, 50)
         self.set_line_width(0.5)

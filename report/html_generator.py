@@ -8,7 +8,7 @@ from datetime import datetime
 
 from logger import get_logger
 from analyzer.models import AnalysisReport
-from version import APP_VERSION, APP_AUTHOR
+from version import APP_VERSION, APP_AUTHOR, APP_BILIBILI
 
 logger = get_logger('report.html')
 
@@ -223,6 +223,21 @@ class HTMLReportGenerator:
         sigma_matches = getattr(report, '_sigma_matches', None) or []
         if sigma_matches:
             sections.append(self._build_sigma_section(sigma_matches))
+
+        # ===== 11.7. Suricata 网络签名命中 =====
+        suricata_section = self._build_suricata_section(report)
+        if suricata_section:
+            sections.append(suricata_section)
+
+        # ===== 11.8. 行为标签 (VT 风格原子化标签) =====
+        behavior_tags_section = self._build_behavior_tags_section(report)
+        if behavior_tags_section:
+            sections.append(behavior_tags_section)
+
+        # ===== 11.9. C2 通信深度分析 (可疑连接评分) =====
+        c2_section = self._build_c2_section(report)
+        if c2_section:
+            sections.append(c2_section)
 
         # ===== 13. RAT/Stealer 配置提取 =====
         rat_section = self._build_rat_config_section(report)
@@ -458,7 +473,7 @@ pre{{background:#0f172a;border:1px solid #334155;border-radius:8px;padding:12px 
 <div class="content">
 {sections_html}
 </div>
-<div class="footer">生成时间: {self._now()}{duration_str} | 样本动态分析工具 v{APP_VERSION} | 程序作者: {APP_AUTHOR}</div>
+<div class="footer">生成时间: {self._now()}{duration_str} | 样本动态分析工具 v{APP_VERSION} | github: {APP_AUTHOR} · bilibili: {APP_BILIBILI}</div>
 </div>
 </div>
 <button class="scroll-top" title="回到顶部" onclick="window.scrollTo({{top:0,behavior:'smooth'}})">↑</button>
@@ -520,7 +535,23 @@ function copyIOCs(){{var iocs=[];document.querySelectorAll('.ioc-card .ioc-val')
                 sign_txt = f'{signer}' if signer else '存在'
                 if valid is not None:
                     sign_txt += ' (验证' + ('通过' if valid else '失败/无效') + ')'
-                items.append(('数字签名', _esc(sign_txt)[:120]))
+                if ds.get('issuer'):
+                    sign_txt += f' · CA: {ds.get("issuer")[:60]}'
+                items.append(('数字签名', _esc(sign_txt)[:160]))
+                # 签名链详细（颁发CA/序列号/有效期/吊销/链可信度）
+                chain_bits = []
+                if ds.get('issuer'):
+                    chain_bits.append(f'颁发CA: {ds.get("issuer")[:100]}')
+                if ds.get('serial'):
+                    chain_bits.append(f'序列号: {ds.get("serial")[:40]}')
+                if ds.get('not_before') or ds.get('not_after'):
+                    chain_bits.append(f'有效期: {ds.get("not_before", "?")} ~ {ds.get("not_after", "?")}')
+                if ds.get('chain_valid') is not None:
+                    chain_bits.append('证书链: ' + ('可信' if ds.get('chain_valid') else '不可信/未通过'))
+                if ds.get('chain_status'):
+                    chain_bits.append(f'链状态: {ds.get("chain_status")[:100]}')
+                if chain_bits:
+                    items.append(('签名链', _esc(' | '.join(chain_bits))[:220]))
         evidence_rel = getattr(report, '_evidence_pack_rel', '') or ''
         if evidence_rel:
             items.append((
@@ -858,6 +889,27 @@ function copyIOCs(){{var iocs=[];document.querySelectorAll('.ioc-card .ioc-val')
             sig = c.get('signature', '') or c.get('name', '') or ''
             if sig:
                 _collect('可疑', [f'社区签名命中: {sig}'])
+
+        # ===== Suricata / C2 评分 / 行为标签 =====
+        suricata = getattr(report, '_suricata_matches', []) or []
+        for sm in suricata[:10]:
+            msg = sm.msg if hasattr(sm, 'msg') else sm.get('msg', '')
+            sev = sm.severity if hasattr(sm, 'severity') else sm.get('severity', 'medium')
+            if msg:
+                _collect('高危' if sev == 'high' else '可疑', [f'Suricata[{sev}]: {msg}'])
+
+        c2c = getattr(report, '_c2_candidates', []) or []
+        c2_hits = [c for c in c2c if c.get('is_c2')]
+        if c2_hits:
+            _collect('高危', [f'C2通信判定 {len(c2_hits)} 条: ' + '; '.join(
+                f"{c.get('remote')}:{c.get('port')}" for c in c2_hits[:3])])
+        elif c2c:
+            _collect('可疑', [f'可疑连接 {len(c2c)} 条 (非标准端口/非白名单IP)'])
+
+        btags = getattr(report, '_behavior_tags', []) or []
+        if btags:
+            _collect('可疑', [f'行为标签 {len(btags)} 项: ' + ', '.join(
+                t.get('tag', '') for t in btags[:8])])
 
         # ===== Frida 内存保护监控 (RW→RX载荷解密/DEP绕过/ROP喷射/远程注入/反沙箱) =====
         memprot = getattr(report, '_memprot_summary', None)
@@ -2476,6 +2528,69 @@ function copyIOCs(){{var iocs=[];document.querySelectorAll('.ioc-card .ioc-val')
             rows += f'<tr class="{sev_cls}"><td style="font-weight:600">{title}</td><td>{desc}</td><td class="small">{tags}</td><td class="small">{technique}</td><td><span style="color:#f59e0b;font-weight:600">{level_label}</span></td><td class="small">{matched_on}</td></tr>'
         table = '<table class="data-table"><thead><tr><th>标题</th><th>描述</th><th>标签</th><th>MITRE</th><th>级别</th><th>来源</th></tr></thead><tbody>' + rows + '</tbody></table>'
         return '<div class="section" style="border-left-color:#a855f7"><h2 id="sigma">Sigma 规则命中 (' + str(len(sigma_matches)) + ' 项)</h2>' + table + '</div>'
+
+    def _build_suricata_section(self, report):
+        """构建 Suricata 网络签名命中区域"""
+        matches = getattr(report, '_suricata_matches', []) or []
+        if not matches:
+            return ''
+        rows = ''
+        for m in matches[:50]:
+            msg = _esc((m.msg if hasattr(m, 'msg') else m.get('msg', '') or '')[:120])
+            cat = _esc((m.category if hasattr(m, 'category') else m.get('category', '') or '')[:40])
+            sev = m.severity if hasattr(m, 'severity') else m.get('severity', 'medium')
+            matched = _esc((m.matched_on if hasattr(m, 'matched_on') else m.get('matched_on', '') or '')[:80])
+            evidence = _esc((m.evidence if hasattr(m, 'evidence') else m.get('evidence', '') or '')[:120])
+            sid = m.sid if hasattr(m, 'sid') else m.get('sid', '')
+            sev_label = {'high': '高危', 'medium': '中', 'low': '低'}.get(sev, sev)
+            sev_cls = 'suspicious' if sev == 'high' else ''
+            rows += f'<tr class="{sev_cls}"><td class="hash">{sid}</td><td style="font-weight:600">{msg}</td><td class="small">{cat}</td><td><span style="color:#f59e0b;font-weight:600">{sev_label}</span></td><td class="small">{matched}</td><td class="small">{evidence}</td></tr>'
+        table = '<table class="data-table"><thead><tr><th>SID</th><th>签名</th><th>类别</th><th>级别</th><th>匹配对象</th><th>证据</th></tr></thead><tbody>' + rows + '</tbody></table>'
+        return '<div class="section" style="border-left-color:#0ea5e9"><h2 id="suricata">Suricata 网络签名命中 (' + str(len(matches)) + ' 项)</h2>' + table + '</div>'
+
+    def _build_behavior_tags_section(self, report):
+        """构建行为标签区域（VT 风格原子化标签）"""
+        tags = getattr(report, '_behavior_tags', []) or []
+        if not tags:
+            return ''
+        rows = ''
+        _cat_label = {'discovery': '发现', 'defense-evasion': '防御规避',
+                      'execution': '执行', 'privilege-escalation': '权限提升',
+                      'collection': '窃取', 'persistence': '持久化',
+                      'impact': '破坏', 'c2': 'C2通信'}
+        for t in tags[:80]:
+            tag = _esc(str(t.get('tag', ''))[:50])
+            mitre = _esc(str(t.get('mitre', ''))[:20])
+            cat = _esc(_cat_label.get(t.get('category', ''), t.get('category', '')))
+            conf = t.get('confidence', 'high')
+            evidence = _esc(str(t.get('evidence', ''))[:140])
+            conf_label = {'high': '高', 'medium': '中', 'low': '低'}.get(conf, conf)
+            rows += f'<tr><td style="font-weight:600"><code class="hash">{tag}</code></td><td class="hash">{mitre}</td><td class="small">{cat}</td><td class="small">{conf_label}</td><td class="small">{evidence}</td></tr>'
+        table = '<table class="data-table"><thead><tr><th>行为标签</th><th>MITRE</th><th>类别</th><th>置信度</th><th>证据</th></tr></thead><tbody>' + rows + '</tbody></table>'
+        return '<div class="section" style="border-left-color:#22c55e"><h2 id="behavior-tags">行为标签 (' + str(len(tags)) + ' 项 · VT 风格)</h2>' + table + '</div>'
+
+    def _build_c2_section(self, report):
+        """构建 C2 通信深度分析区域（可疑连接评分）"""
+        candidates = getattr(report, '_c2_candidates', []) or []
+        if not candidates:
+            return ''
+        rows = ''
+        for c in candidates[:30]:
+            remote = _esc(str(c.get('remote', '')))
+            port = str(c.get('port', ''))
+            domain = _esc(str(c.get('domain', '') or ''))[:60]
+            score = c.get('score', 0)
+            level = c.get('level', 'low')
+            is_c2 = c.get('is_c2', False)
+            reasons = _esc('; '.join(c.get('reasons', []))[:160])
+            level_label = {'high': '高危', 'medium': '中', 'low': '低'}.get(level, level)
+            level_color = {'high': '#ef4444', 'medium': '#f59e0b', 'low': '#64748b'}.get(level, '#64748b')
+            verdict = '<span style="color:#ef4444;font-weight:700">C2</span>' if is_c2 else '<span class="small">候选</span>'
+            sev_cls = 'suspicious' if is_c2 else ''
+            rows += f'<tr class="{sev_cls}"><td class="hash">{remote}:{port}</td><td class="small">{domain}</td><td><span style="color:{level_color};font-weight:700">{score}</span></td><td><span style="color:{level_color};font-weight:600">{level_label}</span></td><td>{verdict}</td><td class="small">{reasons}</td></tr>'
+        table = '<table class="data-table"><thead><tr><th>远端</th><th>域名</th><th>评分</th><th>级别</th><th>判定</th><th>评分依据</th></tr></thead><tbody>' + rows + '</tbody></table>'
+        c2_count = sum(1 for c in candidates if c.get('is_c2'))
+        return '<div class="section" style="border-left-color:#ef4444"><h2 id="c2">C2 通信深度分析 (' + str(len(candidates)) + ' 条可疑连接, ' + str(c2_count) + ' 条判定 C2)</h2>' + table + '</div>'
 
     def _build_threat_intel_section(self, report):
         ti = report.threat_intel

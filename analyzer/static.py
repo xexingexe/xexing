@@ -17,6 +17,8 @@ from analyzer.models import FileInfo
 
 logger = get_logger('analyzer.static')
 
+# 关注叾嗣exe谢谢喵
+
 
 class StaticAnalyzer:
     """静态分析引擎"""

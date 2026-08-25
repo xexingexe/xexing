@@ -311,6 +311,7 @@ class DroppedFile:
     detection: str = ''
     yara_matches: List[str] = field(default_factory=list)
     analysis_note: str = ''  # 轻量级内容分析备注
+    file_kind: str = ''      # 魔数检测分类 (PE_EXE/PE_DLL/DOS_COM/SCRIPT/ZIP/...)
 
 @dataclass
 class DroppedFilesAnalysis:
