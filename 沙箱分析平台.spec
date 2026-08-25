@@ -168,7 +168,7 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name="叾嗣",
+    name="样本动态分析工具",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -190,5 +190,5 @@ coll = COLLECT(
     strip=False,
     upx=False,
     upx_exclude=[],
-    name="叾嗣",
+    name="样本动态分析工具",
 )

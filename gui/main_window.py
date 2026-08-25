@@ -10,7 +10,7 @@ from tkinter import ttk, filedialog, messagebox
 
 from logger import get_logger, LoggerManager
 from config import CONFIG
-from version import APP_NAME, APP_VERSION, APP_AUTHOR, APP_NAME_CN
+from version import APP_NAME, APP_VERSION, APP_AUTHOR, APP_NAME_CN, APP_BILIBILI
 
 logger = get_logger('gui')
 
@@ -25,7 +25,7 @@ class AnalysisGUI:
                 pass
 
         self.root = tk.Tk()
-        self.root.title(f"{APP_NAME} v{APP_VERSION}")
+        self.root.title(f"{APP_NAME_CN} v{APP_VERSION}")
         self.root.geometry("1200x850")
         self.root.minsize(1000, 700)
         self.root.configure(bg='#f0f2f5')
@@ -497,7 +497,7 @@ class AnalysisGUI:
         
         title_left = tk.Frame(header, bg='#f0f2f5')
         title_left.pack(side='left')
-        ttk.Label(title_left, text=f"🔍 {APP_NAME}", font=('Segoe UI', 18, 'bold'), 
+        ttk.Label(title_left, text=f"🔍 {APP_NAME_CN}", font=('Segoe UI', 18, 'bold'), 
                  foreground='#4f46e5', background='#f0f2f5').pack(side='left')
         ttk.Label(title_left, text=f"v{APP_VERSION}", font=('Segoe UI', 10, 'bold'), 
                  foreground='#818cf8', background='#f0f2f5').pack(side='left', padx=(8, 0))
@@ -1377,6 +1377,7 @@ class AnalysisGUI:
             f"应用: {APP_NAME} v{APP_VERSION}",
             f"程序名称: {APP_NAME_CN}",
             f"程序作者: {APP_AUTHOR}",
+f"Bilibili: {APP_BILIBILI}",
             f"Python 版本: {py_ver}",
             f"YARA 规则数: {yara_count}",
             f"配置文件: {cfg_path}",

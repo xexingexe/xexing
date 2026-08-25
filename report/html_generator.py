@@ -458,7 +458,7 @@ pre{{background:#0f172a;border:1px solid #334155;border-radius:8px;padding:12px 
 <div class="content">
 {sections_html}
 </div>
-<div class="footer">生成时间: {self._now()}{duration_str} | 沙箱分析器 v{APP_VERSION} | 程序作者: {APP_AUTHOR}</div>
+<div class="footer">生成时间: {self._now()}{duration_str} | 样本动态分析工具 v{APP_VERSION} | 程序作者: {APP_AUTHOR}</div>
 </div>
 </div>
 <button class="scroll-top" title="回到顶部" onclick="window.scrollTo({{top:0,behavior:'smooth'}})">↑</button>
